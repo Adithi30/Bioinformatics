@@ -1,0 +1,172 @@
+library(Seurat)
+library(ggplot2)
+library(Matrix)
+
+
+# Set the file paths
+matrix_file <- "~/data_heaswar1/adithi/datasets/scRNAseq_Data/GSM5435958_LApc_o_matrix.mtx.gz"
+features_file <- "~/data_heaswar1/adithi/datasets/scRNAseq_Data/GSM5435958_LApc_o_features.tsv.gz"  
+barcodes_file <- "~/data_heaswar1/adithi/datasets/scRNAseq_Data/GSM5435958_LApc_o_barcodes.tsv.gz"  
+
+# Load the data
+sparse_matrix <- readMM(file = matrix_file)
+
+# Add feature and barcode information
+features <- read.delim(features_file, header = FALSE)
+barcodes <- read.delim(barcodes_file, header = FALSE)
+
+# Convert to Seurat object
+rownames(sparse_matrix) <- features$V2  
+colnames(sparse_matrix) <- barcodes$V1  
+
+
+#check for duplicates
+duplicate_genes <- which(duplicated(features$V2))  # Assuming feature names are in column 2 of the features file
+
+if (length(duplicate_genes) > 0) {
+  print("Duplicate genes found:")
+  print(features$V2[duplicate_genes])  # Print duplicate gene names
+}
+
+
+# Now, aggregate the counts for duplicate genes
+# Create the gene_counts_df with summed counts for each gene (summing across columns)
+gene_counts_df <- data.frame(gene_symbol = rownames(sparse_matrix), counts = rowSums(sparse_matrix))
+
+
+# Aggregate counts by gene name in case there are any duplicates
+aggregated_counts <- aggregate(counts ~ gene_symbol, data = gene_counts_df, sum)
+
+# View the aggregated counts
+head(aggregated_counts)
+
+# Create the new sparse matrix using aggregated counts
+sparse_matrix_unique <- sparse_matrix[match(aggregated_counts$gene_symbol, rownames(sparse_matrix)), ]
+
+# Assign the row names to the unique gene names
+rownames(sparse_matrix_unique) <- aggregated_counts$gene_symbol
+
+# Create a Seurat object using the sparse matrix
+seurat_obj <- CreateSeuratObject(counts = sparse_matrix_unique)
+
+# Normalize the data
+seurat_obj <- NormalizeData(seurat_obj)
+
+
+# Identify highly variable genes
+seurat_obj <- FindVariableFeatures(seurat_obj)
+
+# View variable genes (optional)
+head(VariableFeatures(seurat_obj))
+
+# Scale the data
+seurat_obj <- ScaleData(seurat_obj)
+
+# Perform PCA
+seurat_obj <- RunPCA(seurat_obj)
+
+# View PCA results
+print(seurat_obj[["pca"]], dims = 1:5, nfeatures = 5)
+
+# Find clusters using the first 20 principal components
+seurat_obj <- FindNeighbors(seurat_obj, dims = 1:20)
+seurat_obj <- FindClusters(seurat_obj)
+
+# View clustering results
+head(seurat_obj@meta.data)
+
+
+# Run UMAP
+seurat_obj <- RunUMAP(seurat_obj, dims = 1:20)
+
+# Plot the UMAP
+DimPlot(seurat_obj, reduction = "umap")
+
+
+###writing to csv file
+csvfinal_output<-"~/data_heaswar1/adithi/AnalysisDir/scRNA_genelist.csv"
+# Write the DataFrame to a CSV file
+write.csv(gene_counts_df, file = csvfinal_output, row.names = FALSE)
+
+
+#find common genes between synapse genes and the gene list
+
+synapse<-read.csv("~/data_heaswar1/adithi/datasets/scRNAseq_Data/synapse 2.csv")
+
+# Convert gene names in both dataframes to the same case (e.g., lowercase)
+synapse$hgnc_symbol <- tolower(synapse$hgnc_symbol)
+gene_counts_df$gene_symbol <- tolower(gene_counts_df$gene_symbol)
+
+common_genes <- intersect(synapse$hgnc_symbol, gene_counts_df$gene_symbol)
+print(common_genes)
+
+
+# Verify if PPM1H is present in the Seurat object
+"plxnb1" %in% rownames(seurat_obj)
+
+# Check if "PPM1H" exists in gene_counts_df
+"ppm1h" %in% gene_counts_df$gene_symbol
+
+# Convert all row names of the Seurat object to lowercase
+rownames(seurat_obj) <- tolower(rownames(seurat_obj))
+
+#check for ppm1h gene expression in umap
+FeaturePlot(seurat_obj, features = "ppm1h")
+
+# Violin plot for "ppm1h" gene expression across clusters
+VlnPlot(seurat_obj, features = "ppm1h", group.by = "seurat_clusters")
+
+#
+# Convert to data frame
+common_genes_df <- data.frame(common_genes)
+
+csvfinal_output<-"~/data_heaswar1/adithi/AnalysisDir/common_genes.csv"
+# Write the DataFrame to a CSV file
+write.csv(common_genes_df, file = csvfinal_output, row.names = FALSE)
+
+
+##checking for 9 gene list
+
+# Define the list of genes
+gene_list <- c("PLXNB1", "HSPA8", "CCK", "LAMA5", "ZDHHC8", "PTPRN2", "AP1G2", "CLSTN3", "HIP1R")
+
+gene_list <- tolower(gene_list)
+
+# Check which genes are present in the Seurat object
+present_genes <- gene_list[gene_list %in% rownames(seurat_obj)]
+
+
+
+if (length(present_genes) == 0) {
+  print("None of the genes are present in the Seurat object.")
+} else {
+  print(paste("Genes found in the Seurat object:", paste(present_genes, collapse = ", ")))
+  
+  # Fetch expression data for the present genes
+  expression_data <- FetchData(seurat_obj, vars = present_genes)
+  
+  # Add cluster information to the expression data
+  expression_data$cluster <- seurat_obj$seurat_clusters
+  
+  # Check in which clusters the genes are expressed
+  expressed_clusters <- expression_data %>%
+    filter_at(vars(all_of(present_genes)), any_vars(. > 0)) %>%
+    group_by(cluster) %>%
+    summarise(across(all_of(present_genes), ~ sum(. > 0)))
+  
+  # Display the clusters with expression data
+  print("Clusters where the genes are expressed:")
+  print(expressed_clusters)
+}
+
+for (gene in present_genes) {
+  print(
+    FeaturePlot(seurat_obj, features = gene, reduction = "umap") +
+      ggtitle(paste("Expression of", gene, "on UMAP")) +
+      theme_minimal()
+  )
+}
+
+
+#
+FeaturePlot(seurat_obj, features = c("plxnb1", "hspa8", "cck", "lama5", "zdhhc8", "ptprn2", "ap1g2", "clstn3", "hip1r"))
