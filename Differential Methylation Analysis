@@ -1,1 +1,361 @@
+BiocManager::install("RnBeads.hg38")
+library(RnBeads)
+library(RnBeads.hg38)
+library(tidyverse)
+
+bed.dir<-"~/data_heaswar1/adithi/datasets/readCount_bedFiles"
+sample.annotation<-"~/data_heaswar1/adithi/datasets/output_dir/sample_annotation_sheet.csv"
+analysis.dir<-"~/data_heaswar1/adithi/AnalysisDir"
+report.dir<-"/home/abanava2/data_heaswar1/adithi/data_dir/AnalysisDir"
+
+bed.columns <- c("chr"=1, "start"=2, "end"=3, "meth"=4, "c"=5, "t"=6)
+
+rnb.initialize.reports(report.dir)
+
+data.source<-c(bed.dir, sample.annotation)
+
+#exploratory analysis
+rnb.options(assembly="hg38", import.table.separator=",", import.bed.style="bismarkCov",
+            import.bed.columns=bed.columns)
+
+
+rnb.set<-rnb.execute.import(data.source=data.source, data.type="bs.bed.dir")
+
+rnb.run.exploratory(rnb.set, report.dir)
+
+#---------------------------------------#
+
+#Diff meth analysis
+rnb.options(assembly="hg38", import.table.separator=",", import.bed.style="bismarkCov",
+            import.bed.columns=bed.columns,differential=TRUE,filtering.sex.chromosomes.removal = TRUE, 
+            identifiers.column="Sample_Type", 
+            differential.comparison.columns = c("N_vs_BEneg","N_vs_BEpos","BEneg_vs_BEpos"))
+
+
+rnb.set<-rnb.execute.import(data.source=data.source, data.type="bs.bed.dir")
+
+differential.result<-rnb.run.differential(rnb.set, report.dir)
+
+#----------------------------------------#
+#Formatting
+#CPG SITES
+
+beneg_n1 <- read.csv("~/data_heaswar1/adithi/AnalysisDir/BEdiffMeth/diffmeth_XandY_included/differential_methylation_data/diffMethTable_site_cmp1.csv")
+
+beneg_pos1<- read.csv("~/data_heaswar1/adithi/AnalysisDir/BEdiffMeth/diffmeth_XandY_included/differential_methylation_data/diffMethTable_site_cmp3.csv")
+
+bepos_n1<- read.csv("~/data_heaswar1/adithi/AnalysisDir/BEdiffMeth/diffmeth_XandY_included/differential_methylation_data/diffMethTable_site_cmp2.csv")
+
+
+#Renaming columns
+beneg_n1 <- beneg_n1%>%
+  rename_with(~ str_replace(., "BE\\.", "BEneg"), everything())  # Replace BE. with BE-
+
+colnames(beneg_pos1) <- gsub("BE\\.$", "BEneg", colnames(beneg_pos1))
+colnames(beneg_pos1) <- gsub("BE\\.\\.1$", "BEpos", colnames(beneg_pos1))
+
+colnames(bepos_n1) <- gsub("BE\\.$", "BEpos", colnames(bepos_n1))
+
+
+#Add end column
+bepos_n1 <- bepos_n1 %>%
+  mutate(Start = as.numeric(Start),  # Convert to numeric
+         End = Start + 1) 
+
+beneg_n1<- beneg_n1 %>%
+  mutate(Start = as.numeric(Start),  # Convert to numeric
+         End = Start + 1) 
+
+beneg_pos1<- beneg_pos1 %>%
+  mutate(Start = as.numeric(Start),  # Convert to numeric
+         End = Start + 1) 
+
+
+#Joining
+overlap1 <- inner_join(bepos_n1, beneg_n1, by = c("Chromosome", "Start", "End"))  
+
+cpgs_overlap1 <- overlap1[, -c(30,31,33)]
+
+
+cpgs_overlap1<- cpgs_overlap1[, c(1:5, 30, 6:29, 31:52)]
+
+cpgs_overlap1 <- cpgs_overlap1 %>%
+  filter(!is.na(.[[5]]) & !is.na(.[[6]]) & !is.na(.[[7]]))
+
+#Threshold
+cpgs_overlap1 <- cpgs_overlap1 %>%
+  filter(mean.BEneg >= 0.6, mean.N.x <= 0.4, mean.BEpos >= 0.6)
+
+#--------------------#
+#PROMOTERS
+#BE- vs N
+beneg_n_prom1<- read.csv("~/data_heaswar1/adithi/AnalysisDir/BEdiffMeth/diffmeth_XandY_included/differential_methylation_data/diffMethTable_region_cmp1_promoters.csv")
+
+#BE-vs BE+
+beneg_pos_prom1<- read.csv("~/data_heaswar1/adithi/AnalysisDir/BEdiffMeth/diffmeth_XandY_included/differential_methylation_data/diffMethTable_region_cmp3_promoters.csv")
+
+#BE+ vs N
+bepos_n_prom1<- read.csv("~/data_heaswar1/adithi/AnalysisDir/BEdiffMeth/diffmeth_XandY_included/differential_methylation_data/diffMethTable_region_cmp2_promoters.csv")
+
+# Rename columns that contain "BE." to "BE-"
+beneg_n_prom1 <- beneg_n_prom1 %>%
+  rename_with(~ str_replace(., "BE\\.", "BEneg"), everything())  # Replace BE. with BE-
+
+colnames(beneg_pos_prom1) <- gsub("BE\\.$", "BEneg", colnames(beneg_pos_prom1))
+colnames(beneg_pos_prom1) <- gsub("BE\\.\\.1$", "BEpos", colnames(beneg_pos_prom1))
+
+colnames(bepos_n_prom1) <- gsub("BE\\.$", "BEpos", colnames(bepos_n_prom1))
+
+
+#Joining the promoter dfs 
+# Perform an inner join using a common key 
+joined_table1 <- merge(
+  beneg_n_prom1, 
+  bepos_n_prom1, 
+  by = c("Chromosome", "Start", "End")
+)
+
+joined_table1 <- joined_table1[, -c(21:23, 25)]
+
+joined_table1 <- joined_table1[, c(1:8, 21, 9:20, 22:ncol(joined_table1))]
+
+#Finding the overlapping regions between Cpgs and promoters using GenomicRanges
+promoter_regions1 <- joined_table1
+
+
+library(GenomicRanges)
+
+# Convert Start and End columns in promoter_regions to numeric
+promoter_regions1$Start <- as.numeric(promoter_regions1$Start)
+promoter_regions1$End <- as.numeric(promoter_regions1$End)
+
+cpgs_overlap1$Start <- as.numeric(cpgs_overlap1$Start)
+cpgs_overlap1$End <- as.numeric(cpgs_overlap1$End)
+
+
+promoter_ranges1 <- GRanges(
+  seqnames = promoter_regions1$Chromosome,
+  ranges = IRanges(start = promoter_regions1$Start, end = promoter_regions1$End)
+)
+
+# Convert CpG sites to GenomicRanges
+cpg_ranges1 <- GRanges(
+  seqnames = cpgs_overlap1$Chromosome,
+  ranges = IRanges(start = cpgs_overlap1$Start, end = cpgs_overlap1$End)
+)
+
+
+overlap_indices1 <- findOverlaps(cpg_ranges1, promoter_ranges1)
+
+
+# Extract matching CpG sites
+matched_cpgs1 <- cpgs_overlap1[queryHits(overlap_indices1), ]
+
+# Add promoter region info (e.g., gene name, sequence) to matched CpGs
+matched_promoter_info1 <- promoter_regions1[subjectHits(overlap_indices1), ]
+matched_cpgs_with_info1 <- cbind(matched_cpgs1, matched_promoter_info1)
+
+
+# Group by Symbol (Gene) and count the number of CpGs for each gene
+cpg_count_per_gene1 <- matched_cpgs_with_info1 %>%
+  group_by(symbol.x) %>%
+  summarise(cpg_count = n())
+
+# Filter rows with count > 10
+filtered_cpgs <- cpg_count_per_gene1[cpg_count_per_gene1$cpg_count > 10, ]
+
+#Filter promoters that have high cpg sites
+# Extract unique symbols to filter
+symbols_to_filter <- unique(filtered_cpgs$symbol.x)
+
+# Filter rows in joined_table where 'symbol' is in the list
+filtered_joined_table <- joined_table1[joined_table1$symbol.x %in% symbols_to_filter, ]
+
+
+promoter_cpgs <- matched_cpgs_with_info1 %>%
+  filter(symbol.x %in% filtered_promoter_methylation_summary$symbol.x) %>% # Ensure only filtered promoters
+  select(Chromosome, Start, End, id.x, mean.BEpos, mean.BEneg, mean.N.x, symbol.x) # Select relevant columns
+
+#Split data by promoter symbol
+promoter_cpgs_dfs <- split(promoter_cpgs, promoter_cpgs$symbol.x)
+
+#Assign the split dataframes as individual variables
+list2env(promoter_cpgs_dfs, envir = .GlobalEnv)
+
+
+#--------------------------------------------#
+Using new promoters with annotaion- +/-1500 bp from UCSC Genome Browser
+#find cpgs in new promoter file- with all genes from UCSC Genome Browser
+all_prom<-read.table(file="~/data_heaswar1/adithi/datasets/hg38-allgenes.bed", header = TRUE)
+
+unique_all_prom<- all_prom[!duplicated(all_prom$name2), ]
+
+#find overlapping regions
+
+cpgs_ranges<-GRanges(
+  seqnames=cpgs_overlap1$Chromosome,
+  range=IRanges(start=cpgs_overlap1$Start, end = cpgs_overlap1$End)
+)
+            
+
+allProm_ranges <- GRanges(
+  seqnames = unique_all_prom$chrom,
+  range=IRanges(start=unique_all_prom$promStart, end=unique_all_prom$promEnd)
+)    
+
+overlap_indices<-findOverlaps(cpgs_ranges, allProm_ranges)
+
+
+methylation_values <- cpgs_overlap1[queryHits(overlap_indices), c("Start", "End", "mean.BEneg", "mean.BEpos", "mean.N.x")]
+
+matched_allpromoter <- unique_all_prom[subjectHits(overlap_indices), ]
+matched_allpromoter <- cbind(matched_allpromoter, methylation_values)
+
+matched_allpromoter<-matched_allpromoter%>%
+  filter(chrom != "chrX",
+         chrom != "chrY")
+
+matched_allpromoter<-matched_allpromoter%>%
+  filter(mean.BEpos >= 0.6,
+         mean.BEneg >= 0.6,
+         mean.N.x <= 0.4)
+
+matched_allpromoter<-matched_allpromoter[, -c(2,3)]
+matched_allpromoter<-matched_allpromoter[, c(2, 1, 3:7)]
+
+#count number of cpgs for each gene
+cpgCount_allprom <- matched_allpromoter %>%
+                    dplyr::group_by(name2)%>%
+                    dplyr::summarize(count= n())
+
+cpgCount_allprom<- cpgCount_allprom %>%
+                  filter(count>10)
+
+filterProm <- matched_allpromoter[matched_allpromoter$name2 %in% cpgCount_allprom$name2, ]
+
+
+#-----------------PLOTTING----------------#
+
+#Line graphs for each gene is plotted
+#gene1
+
+gene1<-filterProm %>%
+  filter(name2=="gene1")
+
+sequence <-"CTTGGAGCAGGGGGCGGTGCTCGTCGGAGAGGCTCGG
+CCACGGAGGGGGAGGGGACCTACAGGCATGGCGGGCTGCAGGTCCCGAGC
+CCTGCCCCGAGGGAAGGCAGCTAAGGCCCAGCGAAAAATTGAGCACAGCA
+GCTGCTGGCCCAGGTGCTAAGCCCCTCACTGCCCGGGGCTGGCCGGCCAC
+TCCGAGTGCGGAGCCGCCGAGCCCACGCCCACCCGGAACTCGCGCTGGCC
+TCTGTCTCAAAAAAAAAAAAAAAAACAAGAAAAAGAAAAAAAACTTCTGC
+GCATCCTTCAGAAAGACTGTCCTCATCTGTTCCCCGCTCTGGACAGCCTG
+CACTCCCTCCACCCCCGCCCGGGCCAATTGCTGTTAGCGGCTGTGTCTTC
+TGACTCAGACCTCTGTAATAGCATTCCTGGGTAATACCTGTGTATGTGTC
+TCCTCAACTATTCTAGGAAGGCAGGGGCCATGGTAATTCGTATGTGTCCC
+CGCATTGGCGCGGGGAGGAGCAGGGATCTTGGCAGCGGGCGAGGAGGCTG
+CGAGCGAGCCGCGAACCGAGCGGGCGGCGGGCGCGCGCACCATGGGGGAG
+AAACCCGGGACCAGGTAAGGGAGGTGGGGCCACGCGGCGGGGCATGGGCG
+GCGGCTCGGGGCGGGGGCTGGGACGGTCCCAGACGAGGGCGCAGCGGAGA
+GGATCTGGGGGCCGGACGCCTGGGTCCCTAGGGACAGCCATCCGGGGCCG
+CACGCGCAGGTCCTCGAGGATAATGAGGGTGGGGGGGAAATGCCCGGGCC
+CCTGCAGAAAGCGAGGCCTGAGGGGGATCAGAAAAACCGGTGTCGGGGTT
+CTCGCAGGGATGTGGGGCCAGACTACTGGGCTCTCCCGTGCAGGCTGCGA
+TGCAGGGATGGAGGAAGGAGGAGCAGGTGGCTGGCCCCGAGGGGTCGTGT
+ACGGGGAGGCTGGATGCCGGGACGGGGGGGATCCACTCCAGACTCGCGCC
+AAGCCAATGGAAAGCCTCCTATCCAATATCCCCCAGGTAGTCGCGCTGCC
+CACACCTGTCCCGAGGGCCGGGTGGCTCCTCACCCAAACTTCTACCTTCC
+CTTGGGTTGCCAGGAGCAACAGCTTCATCTTGGGGGAGCCGAGTGCGTGG
+CGACCCTCCCTGAAACTAGATCGTATCCCTCTCTCTGGGGGTGGGGGAGG
+CAGTATTCACCCTGGGCGCGCGTCCACTCCCCGGATGTTTTCTGTGCAAT
+CGAGGCTCTTTCCTTCCACTGATACCCCGAGTTCTCTTTTTTGGTCTCTA
+GCAAAATCCACTTCCTGTTGTGACTCAACACCCCCAAGGGGCAAGGGGTG
+GATGCCTGAGTCGCAGGGGAGCGGGAGCAAAAGACGAAAAGGTTGGGGCT
+GTAGGCCTCAACTCAGAGGGTATCAGGAATAGGGAATTGGTCCTGAGCTC
+TGGCTTGCTCTGCAAAACATCATATCAACCCCACTTCCAACCTATAGAGT
+ATGAGAACCCGGGTTTCTGAGCATCAAGTAGACGAGCATCAGAAAGAGAT
+CATCAGAGAGATGATCCGTCTCCTGGATCAGGGTTTAAACATCCCAGAGA
+AAGGGGAAGTTGCTGACTTGTGGGAGGCCCCTGATTTCCGTCATGTGGTT
+CAGGGAGTGGGACGGATGGACCAAAGGAGACTGCTAACTTGGCACAATTT
+CCCTCACCCCCATGAAATTCTGGGCCACAGGAAATGGAGCGAATAGCAGG
+AAGTGTGAAAGGACATCTGCTTCAGCTACCCCTGCTCCCACTGGGCACCT
+CCCTGGTCATCCCCACACTCTGCCTCCTTGGCCAGCCTAGTATATGCACG
+CTGCTCCTCCCCAGCCTGGCAGGAGGTGGCTGGGTTAGGATCCAAAGGGC
+AAGTGCCTTGCAGCTGCTCCAGGGCAATTGCCCCAGAACCACACTCCAGT
+TGGCCCACTGATTGTGGCTGTCACAGCCCTGTGCCAGGGCTCCTAATGGGA"
+
+start_position <- 4709134
+
+# Function to find CpG positions in the sequence
+find_cpg_positions <- function(sequence, start_position) {
+  sequence <- gsub("\n", "", sequence)  # Remove line breaks
+  cpg_positions <- unlist(gregexpr("CG", sequence))
+  genomic_positions <- start_position + cpg_positions - 1
+  return(genomic_positions)
+}
+
+# Get CpG positions
+cpg_positions <- find_cpg_positions(sequence, start_position)
+
+# Reshape data for ggplot
+gene1_long <- reshape2::melt(
+  gene1, 
+  id.vars = c("Start"), 
+  measure.vars = c("mean.BEneg", "mean.BEpos", "mean.N.x"),
+  variable.name = "Sample", 
+  value.name = "Methylation_Level"
+)
+
+# Plot using ggplot2
+ggplot(Gene1_long, aes(x = Start, y = Methylation_Level, color = Sample)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  labs(
+    title = "CpG Site Methylation Levels in Gene1",
+    x = "Genomic Position (bp)",
+    y = "Methylation Level"
+  ) +
+  scale_color_manual(
+    values = c("mean.BEneg" = "blue", "mean.BEpos" = "red", "mean.N.x" = "green"),
+    labels = c("BEneg", "BEpos", "Normal")
+  ) +
+  theme_minimal() +
+  theme(legend.title = element_blank()) +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(size = 12),  # Increase font size for x-axis numbers
+        axis.text.y = element_text(size = 12))
+
+#----------#
+#Box plot and HeatMap
+
+#convert to long format
+gene1_long<-melt(
+  CLIC3,
+  id.vars=c("chrom", "Start"),
+  measure.vars= c("mean.BEpos", "mean.BEneg", "mean.N.x"),
+  variable.name = "Sample",
+  value.name = "Methylation"
+)
+
+#Box plot
+ggplot(data=gene1_long)+
+  geom_boxplot(mapping=aes(x=Sample, y=Methylation, fill=Sample))+
+  labs(x="Sample", y="Mean Methylation", title="Box Plot Methylation Levels for Gene1")+
+  scale_fill_manual(values=c("mean.BEpos"="blue", "mean.BEneg"="red", "mean.N.x"="yellow"))
+
+
+#Heatmap
+ggplot(data = gene1_long, aes(x = Sample, y = as.factor(Start), fill = Methylation)) +
+  geom_tile() +  
+  labs(
+    x = "Sample",
+    y = "Genomic Position (Start)",
+    title = "Heatmap of Methylation Levels for Gene1",
+    fill = "Methylation Level"
+  ) +
+  scale_fill_gradient(low = "yellow", high = "blue")
+
+
+
+
+
 
