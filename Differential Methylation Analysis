@@ -329,7 +329,7 @@ ggplot(Gene1_long, aes(x = Start, y = Methylation_Level, color = Sample)) +
 
 #convert to long format
 gene1_long<-melt(
-  CLIC3,
+  gene1,
   id.vars=c("chrom", "Start"),
   measure.vars= c("mean.BEpos", "mean.BEneg", "mean.N.x"),
   variable.name = "Sample",
